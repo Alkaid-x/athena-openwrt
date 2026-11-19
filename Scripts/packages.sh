@@ -85,51 +85,51 @@ ls -d package/openwrt-clashoo package/luci-theme-vantage package/luci-app-vantag
 BIN="$ROOT/nailink-bin"; mkdir -p "$BIN"
 DAED_OK=0
 
-if [ "$WITH_DAED" != "false" ] && command -v go >/dev/null 2>&1; then
-  echo "===> [3/6] 交叉编译 NaiLink daed（linux/arm64）"
-  pushd "$WORK/NaiLink" >/dev/null
-
-  # 主程序
-  DAED_BUILT=0
-  for p in ./cmd/daed ./cmd/daed-router .; do
-    if [ -e "$p" ] && GOOS=linux GOARCH=arm64 CGO_ENABLED=0 \
-        go build -trimpath -ldflags "-s -w" -o "$BIN/daed" "$p" 2>"$BIN/daed.build.log"; then
-      echo "   daed  <- $p"; DAED_BUILT=1; break
-    fi
-  done
-
-  # btf-probe
-  PROBE_BUILT=0
-  for p in ./cmd/btf-probe ./cmd/btfprobe ./tools/btf-probe; do
-    if [ -e "$p" ] && GOOS=linux GOARCH=arm64 CGO_ENABLED=0 \
-        go build -trimpath -ldflags "-s -w" -o "$BIN/btf-probe" "$p" 2>/dev/null; then
-      PROBE_BUILT=1; break
-    fi
-  done
-  if [ "$PROBE_BUILT" = 0 ] && [ -f ./scripts/btf-probe.py ]; then
-    cp ./scripts/btf-probe.py "$BIN/btf-probe"; PROBE_BUILT=1
+if [ "$WITH_DAED" != "false" ]; then
+  echo "===> [3/6] 取 NaiLink 预编译二进制（官方 release ipk，免 Go 编译）"
+  DAED_IPK_URL="https://github.com/slobys/NaiLink/releases/download/openwrt-v0.6.90/daed-router-0.6.90-aarch64_cortex-a53.ipk"
+  mkdir -p "$BIN" "$WORK/ipk"
+  rm -f "$BIN/daed" "$BIN/btf-probe"
+  if curl -fL --retry 3 -o "$WORK/daed.ipk" "$DAED_IPK_URL" || wget -q -O "$WORK/daed.ipk" "$DAED_IPK_URL"; then
+    echo "   ipk: $(stat -c%s "$WORK/daed.ipk" 2>/dev/null || echo 0)B"
+    ( cd "$WORK/ipk" && ar x "$WORK/daed.ipk" && \
+      ( tar xzf data.tar.gz 2>/dev/null || tar --zstd -xf data.tar.zst 2>/dev/null || tar xf data.tar.* 2>/dev/null ) )
+    for pair in "usr/bin/daed:daed" "usr/libexec/daed/btf-probe:btf-probe" "usr/libexec/daed/luci-proxy:luci-proxy"; do
+      src="$WORK/ipk/${pair%%:*}"; dst="$BIN/${pair##*:}"
+      if [ -e "$src" ]; then
+        cp -r "$src" "$dst"
+        echo "   <- ${pair%%:*} -> ${pair##*:}"
+      fi
+    done
+  else
+    echo "   !! 预编译包下载失败"
   fi
 
-  # luci-proxy（前端产物或编译产物）
-  LUCIPROXY=""
-  for c in ./luci-proxy/dist/luci-proxy ./luci-proxy/build/luci-proxy \
-           ./luci-proxy/luci-proxy ./dist/luci-proxy ./luci-proxy.tar.gz \
-           ./luci-proxy/luci-proxy.tar.gz ./luci-proxy.zip; do
-    [ -e "$c" ] && { LUCIPROXY="$c"; break; }
-  done
-  if [ -z "$LUCIPROXY" ] && [ -f ./luci-proxy/package.json ]; then
-    ( cd ./luci-proxy && (npm ci --silent || npm install --silent) && npm run build --silent ) \
-      && LUCIPROXY="./luci-proxy/dist/luci-proxy"
+  # 兜底：源码树在、有 go，就自己编一次
+  if [ ! -s "$BIN/daed" ] && command -v go >/dev/null 2>&1 && [ -d "$WORK/NaiLink" ]; then
+    for p in ./wing/cmd/daed ./cmd/daed ./wing ./cmd; do
+      [ -e "$WORK/NaiLink/$p" ] || continue
+      ( cd "$WORK/NaiLink" && GOOS=linux GOARCH=arm64 CGO_ENABLED=0 \
+          go build -trimpath -ldflags "-s -w" -o "$BIN/daed" "$p" 2>"$BIN/daed.build.log" )
+      if [ -s "$BIN/daed" ]; then echo "   go build 兜底成功 <- $p"; break; fi
+      rm -f "$BIN/daed"
+    done
   fi
-  [ -n "$LUCIPROXY" ] && [ -e "$LUCIPROXY" ] && cp -r "$LUCIPROXY" "$BIN/luci-proxy"
-
-  popd >/dev/null
 
   [ -s "$BIN/daed" ] && DAED_OK=1
-  echo "--- daed=$DAED_OK  daed=$(stat -c%s "$BIN/daed" 2>/dev/null || echo 0)B  probe=$(stat -c%s "$BIN/btf-probe" 2>/dev/null || echo 0)B"
-  [ -s "$BIN/luci-proxy" ] || [ -d "$BIN/luci-proxy" ] || echo "   !! luci-proxy 未找到，LuCI 代理页可能不可用"
+  echo "--- daed=$DAED_OK  daed=$(stat -c%s "$BIN/daed" 2>/dev/null || echo 0)B  probe=$(stat -c%s "$BIN/btf-probe" 2>/dev/null || echo 0)B  luci-proxy=$(stat -c%s "$BIN/luci-proxy" 2>/dev/null || echo 0)B"
 else
-  echo "===> [3/6] 跳过 daed 编译（WITH_DAED=$WITH_DAED, go=$(command -v go || echo none)）"
+  echo "===> [3/6] 跳过 daed（WITH_DAED=$WITH_DAED）"
+fi
+
+# BTF：RE-CS-02 的 kernel 分区被 ipq60xx.mk 写死 6144k，开 BTF 后 FIT 内核 7677924B 超限
+if [ "$WITH_BTF" = "true" ]; then
+  echo "=== with_btf=true：打开 BTF，并把 KERNEL_SIZE 6144k -> 8192k（daed 内核需要）"
+  sed -i 's/^CONFIG_KERNEL_DEBUG_INFO=n/CONFIG_KERNEL_DEBUG_INFO=y/; s/^CONFIG_KERNEL_DEBUG_INFO_BTF=n/CONFIG_KERNEL_DEBUG_INFO_BTF=y/' "$CFG"
+  sed -i '/define Device\/jdcloud_re-cs-02/,/endef/ s/KERNEL_SIZE := 6144k/KERNEL_SIZE := 8192k/' \
+    target/linux/qualcommax/image/ipq60xx.mk
+else
+  echo "=== with_btf=false：内核守住 6144k 上限，daed 内核不可用（NaiLink 仍可用 sing-box / mihomo 内核）"
 fi
 
 # ---------------------------------------------------------------- 4. .config
@@ -172,7 +172,7 @@ check CONFIG_PACKAGE_luci-theme-vantage
 check CONFIG_PACKAGE_luci-app-vantage
 check CONFIG_PACKAGE_nikki
 check CONFIG_PACKAGE_luci-app-nikki
-check CONFIG_KERNEL_DEBUG_INFO_BTF
+[ "$WITH_BTF" = "true" ] && check CONFIG_KERNEL_DEBUG_INFO_BTF
 check CONFIG_PACKAGE_kmod-sched-bpf
 [ "$DAED_OK" = 1 ] && check CONFIG_PACKAGE_daed-router
 

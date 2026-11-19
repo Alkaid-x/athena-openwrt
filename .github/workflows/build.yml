@@ -11,6 +11,11 @@ on:
         options:
           - master
           - openwrt-24.10
+      with_btf:
+        description: '内核加 BTF（daed 内核必需，会把 KERNEL_SIZE 抬到 8192k）'
+        required: false
+        default: false
+        type: boolean
       with_daed:
         description: '交叉编译 NaiLink daed 并打进固件'
         required: true
@@ -29,6 +34,7 @@ permissions:
 env:
   BRANCH: ${{ inputs.branch || 'master' }}
   WITH_DAED: ${{ inputs.with_daed }}
+  WITH_BTF: ${{ inputs.with_btf }}
   TZ: Asia/Shanghai
 
 jobs:
