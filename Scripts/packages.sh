@@ -92,9 +92,25 @@ if [ "$WITH_DAED" != "false" ]; then
   rm -f "$BIN/daed" "$BIN/btf-probe"
   if curl -fL --retry 3 -o "$WORK/daed.ipk" "$DAED_IPK_URL" || wget -q -O "$WORK/daed.ipk" "$DAED_IPK_URL"; then
     echo "   ipk: $(stat -c%s "$WORK/daed.ipk" 2>/dev/null || echo 0)B"
-    ( cd "$WORK/ipk" && ar x "$WORK/daed.ipk" && \
-      ( tar xzf data.tar.gz 2>/dev/null || tar --zstd -xf data.tar.zst 2>/dev/null || tar xf data.tar.* 2>/dev/null ) )
-    for pair in "usr/bin/daed:daed" "usr/libexec/daed/btf-probe:btf-probe" "usr/libexec/daed/luci-proxy:luci-proxy"; do
+    # 这个 release 的 .ipk 实际是 gzip 流（tar.gz 包着 ar 成员），也可能真是 ar，两种都处理
+    ( cd "$WORK/ipk" && rm -rf ./* 2>/dev/null
+      magic=$(head -c 2 "$WORK/daed.ipk" | od -An -tx1 | tr -d ' \n')
+      if [ "$magic" = "1f8b" ]; then
+        echo "   ipk 是 gzip/tar 封装，按 tar 解"
+        tar xzf "$WORK/daed.ipk" 2>/dev/null || true
+      else
+        ar x "$WORK/daed.ipk" || tar xf "$WORK/daed.ipk"
+      fi
+      ls -1
+      mkdir -p payload
+      for d in data.tar.gz data.tar.zst data.tar.xz data.tar.bz2 data.tar; do
+        if [ -f "$d" ]; then
+          tar xf "$d" -C payload 2>/dev/null || tar --zstd -xf "$d" -C payload 2>/dev/null || true
+          echo "   payload <- $d"
+          break
+        fi
+      done )
+    for pair in "payload/usr/bin/daed:daed" "payload/usr/libexec/daed/btf-probe:btf-probe" "payload/usr/libexec/daed/luci-proxy:luci-proxy"; do
       src="$WORK/ipk/${pair%%:*}"; dst="$BIN/${pair##*:}"
       if [ -e "$src" ]; then
         cp -r "$src" "$dst"
