@@ -95,6 +95,13 @@ jobs:
           chmod +x Scripts/*.sh
           bash Scripts/packages.sh
 
+      - name: 7b. 裁剪内核（塞进 6144k FIT 槽）
+        working-directory: openwrt
+        run: |
+          bash ../Scripts/kernel-trim.sh
+          # 6144k 槽位是硬限制，先确认目标配置真的存在
+          grep -n 'KERNEL_SIZE := 6144k' target/linux/qualcommax/image/ipq60xx.mk | head -3 || true
+
       - name: 8. 下载源码包
         run: |
           cd openwrt
